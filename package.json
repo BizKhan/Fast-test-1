@@ -1,0 +1,15 @@
+{
+  "name": "canvas-game-boilerplate",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Professional HTML5 Canvas Game Boilerplate with Vite",
+  "scripts": {
+    "setup": "npm install",
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

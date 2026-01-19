@@ -1,0 +1,619 @@
+# CANVAS ENGINE - LLM CONTEXT FILE
+# Last Updated: 2026-01-13
+# Purpose: Enable AI agents to work on this engine without reading every file
+# Related: See /SceneEditor/llms.txt for the GameDev UI tool
+
+================================================================================
+DOCUMENTATION INDEX
+================================================================================
+
+/docs/ASSET_PIPELINE_AND_PERFORMANCE.md
+  - Image specifications (PO2 rule, 2048px max sheets)
+  - Tiling standards for scrolling backgrounds
+  - Sprite-sheet JSON schema for animations
+  - Mobile performance guardrails (deltaTime, object pooling, culling)
+  - Audio standards (MP3, mobile unlock pattern)
+  - Memory management (cache clearing between scenes)
+
+================================================================================
+OVERVIEW
+================================================================================
+
+This is a vanilla JavaScript HTML5 Canvas game engine for 2D mobile games.
+- Internal Resolution: 1080 x 1920 (9:16 portrait)
+- All game logic uses canvas coordinates (0-1080 x, 0-1920 y)
+- Letterbox scaling automatically adapts to any device
+- Screens are called "Scenes" in this engine
+- Built with Vite for development and production builds
+
+================================================================================
+PROJECT STRUCTURE
+================================================================================
+
+/
+├── index.html              # Entry HTML with mobile meta tags
+├── package.json            # npm dependencies (vite)
+├── vite.config.js          # Vite configuration
+├── llms.txt                # THIS FILE - AI context
+├── README.md               # Basic readme
+└── src/
+    ├── css/
+    │   └── style.css       # Fullscreen canvas CSS, touch handling
+    └── js/
+        ├── main.js         # Entry point - creates Engine, loads BootScene
+        ├── core/
+        │   ├── Engine.js       # Main engine class
+        │   ├── SceneManager.js # Scene switching
+        │   ├── LayerManager.js # 7-layer render system
+        │   ├── InputHandler.js # Touch/mouse/keyboard input
+        │   ├── AssetLoader.js  # Image/audio/video preloading
+        │   └── AudioManager.js # Music and SFX playback
+        ├── entities/
+        │   ├── Sprite.js       # Base sprite class
+        │   └── Button.js       # UI button class
+        └── scenes/
+            ├── Scene.js        # Base scene class
+            ├── BootScene.js    # Initial loading scene
+            └── BlankScene.js   # Empty template scene
+
+================================================================================
+CORE CLASSES
+================================================================================
+
+## Engine (src/js/core/Engine.js)
+Main game engine class. Instantiated in main.js.
+
+Constructor: new Engine(canvas, width=1080, height=1920)
+
+Properties:
+- canvas, ctx          : Canvas element and 2D context
+- width, height        : Internal resolution (1080x1920)
+- inputHandler         : InputHandler instance
+- layerManager         : LayerManager instance
+- sceneManager         : SceneManager instance
+- audioManager         : AudioManager instance
+- assetLoader          : AssetLoader instance
+- isRunning            : Boolean game loop state
+
+Methods:
+- start()              : Start the game loop
+- stop()               : Stop the game loop
+- gameLoop(time)       : Main loop (called via requestAnimationFrame)
+- update(deltaTime)    : Update game state (deltaTime in seconds)
+- draw()               : Clear canvas and render all layers
+- setupLetterboxScaling() : Maintains aspect ratio on resize
+- getLayerManager()    : Returns layerManager
+- getInputHandler()    : Returns inputHandler
+- getSceneManager()    : Returns sceneManager
+- getAudioManager()    : Returns audioManager
+- getAssetLoader()     : Returns assetLoader
+
+Global Access: window.gameEngine (for debugging)
+
+--------------------------------------------------------------------------------
+
+## SceneManager (src/js/core/SceneManager.js)
+Manages scene lifecycle and transitions.
+
+Constructor: new SceneManager(engine)
+
+Properties:
+- engine               : Engine reference
+- currentScene         : Active Scene instance
+- scenes               : Map of registered scenes by name
+
+Methods:
+- register(name, scene)    : Register scene by name for later switching
+- switchTo(sceneName)      : Switch to registered scene by name
+- changeScene(newScene)    : Direct scene change (calls exit/enter lifecycle)
+- getCurrentScene()        : Returns current scene
+- update(deltaTime)        : Calls currentScene.update(deltaTime)
+
+Scene Change Flow:
+1. currentScene.exit() called
+2. newScene.setEngine(engine) called
+3. layerManager.clearAll() clears all layers
+4. currentScene = newScene
+5. newScene.enter() called (calls init() if first time)
+6. newScene.populateLayers() called
+
+--------------------------------------------------------------------------------
+
+## LayerManager (src/js/core/LayerManager.js)
+Handles layered rendering with fixed z-order.
+
+Constructor: new LayerManager(canvas)
+
+THE 7 RENDER LAYERS (bottom to top):
+┌─────────────────────────────────────────────────────────────┐
+│ Layer Index │ Name         │ Purpose                        │
+├─────────────┼──────────────┼────────────────────────────────┤
+│ 0           │ BG_FAR       │ Far parallax backgrounds       │
+│ 1           │ BG_NEAR      │ Near parallax backgrounds      │
+│ 2           │ VIDEO_IMAGE  │ Full-screen images/video       │
+│ 3           │ SHAPES       │ Primitive shapes, particles    │
+│ 4           │ SPRITES      │ Game characters and objects    │
+│ 5           │ TEXT         │ In-game text, HUD elements     │
+│ 6           │ UI_BUTTONS   │ Touch buttons (always on top)  │
+└─────────────────────────────────────────────────────────────┘
+
+Methods:
+- addToLayer(entity, layerName)      : Add entity to layer (entity must have render(ctx) method)
+- removeFromLayer(entity, layerName) : Remove entity from layer
+- clearLayer(layerName)              : Clear single layer
+- clearAll()                         : Clear all layers
+- render(ctx)                        : Render all layers in order
+
+Entity Requirement: Any object added to a layer MUST have a render(ctx) method.
+
+Example custom render object:
+```javascript
+const bg = {
+  render: (ctx) => {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, 1080, 1920);
+  }
+};
+this.layerManager.addToLayer(bg, 'BG_FAR');
+```
+
+--------------------------------------------------------------------------------
+
+## InputHandler (src/js/core/InputHandler.js)
+Unified touch/mouse/keyboard input with coordinate transformation.
+
+Constructor: new InputHandler(canvas, internalWidth=1080, internalHeight=1920)
+
+Properties:
+- mouse.x, mouse.y     : Current position in canvas coordinates (0-1080, 0-1920)
+- mouse.down           : Boolean - currently pressed
+- mouse.pressed        : Boolean - just pressed this frame (one-shot)
+- mouse.released       : Boolean - just released this frame (one-shot)
+- touches              : Array of {id, x, y, startX, startY}
+- keys                 : Object mapping key codes to boolean state
+
+Methods:
+- isKeyDown(code)      : Check if key is down (e.g., 'KeyW', 'ArrowUp', 'Space')
+- isMouseDown()        : Check if mouse/touch is down
+- getMousePos()        : Returns {x, y} in canvas coordinates
+- getTouches()         : Returns array of active touches
+- screenToCanvas(x,y)  : Convert screen coords to canvas coords
+- updateTransform()    : Recalculate scaling (called on resize)
+- resetFrame()         : Reset pressed/released flags (called by engine)
+
+Game Keys (prevent default): ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Space, Enter, KeyW, KeyA, KeyS, KeyD
+
+IMPORTANT: mouse.pressed and mouse.released are only true for ONE FRAME.
+Check them in update() before they reset.
+
+--------------------------------------------------------------------------------
+
+## AssetLoader (src/js/core/AssetLoader.js)
+Preloads images, audio, and video files.
+
+Constructor: new AssetLoader()
+
+Properties:
+- images               : Map of loaded images
+- audio                : Map of loaded audio
+- videos               : Map of loaded videos
+- loadedCount          : Number of assets loaded
+- totalCount           : Total assets in current batch
+- onProgress           : Callback(progress, loaded, total)
+- onComplete           : Callback when batch complete
+
+Methods:
+- loadImage(id, path)      : Load single image, returns Promise<Image>
+- loadAudio(id, path)      : Load single audio, returns Promise<HTMLAudioElement>
+- loadVideo(id, path)      : Load single video, returns Promise<HTMLVideoElement>
+- loadImages(assets)       : Batch load [{id, path}, ...], returns Promise
+- loadAudioFiles(assets)   : Batch load audio files, returns Promise
+- loadVideos(assets)       : Batch load video files, returns Promise
+- getImage(id)             : Get loaded image by id
+- getAudio(id)             : Get loaded audio by id
+- getVideo(id)             : Get loaded video by id
+- startBatch()             : Reset counters for new batch
+- reset()                  : Reset loader state
+
+Example usage in scene:
+```javascript
+async init() {
+  const loader = this.engine.assetLoader;
+  loader.onProgress = (p) => console.log(`Loading: ${Math.floor(p*100)}%`);
+  await loader.loadImages([
+    { id: 'bg', path: '/assets/images/background.png' },
+    { id: 'player', path: '/assets/images/player.png' }
+  ]);
+}
+```
+
+--------------------------------------------------------------------------------
+
+## AudioManager (src/js/core/AudioManager.js)
+Handles music and sound effect playback.
+
+Constructor: new AudioManager()
+
+Properties:
+- musicVolume          : 0-1 volume for music
+- sfxVolume            : 0-1 volume for sound effects
+- currentMusic         : Currently playing music element
+
+Methods:
+- playMusic(id, loop=true)    : Play music from /assets/music/{id}
+- stopMusic()                 : Stop current music
+- playSFX(id, volume=null)    : Play SFX from /assets/sfx/{id}
+- setMusicVolume(volume)      : Set music volume (0-1)
+- setSFXVolume(volume)        : Set SFX volume (0-1)
+
+Expected Asset Paths:
+- Music: /assets/music/{filename}
+- SFX: /assets/sfx/{filename}
+
+IMPORTANT: Mobile browsers require user interaction before playing audio.
+Trigger audio on first touch/click event.
+
+================================================================================
+ENTITY CLASSES
+================================================================================
+
+## Sprite (src/js/entities/Sprite.js)
+Base class for game entities.
+
+Constructor: new Sprite(x=0, y=0, width=0, height=0)
+
+Properties:
+- x, y                 : Position (top-left corner)
+- width, height        : Dimensions
+- rotation             : Rotation in radians
+- scaleX, scaleY       : Scale factors (1 = normal)
+- alpha                : Opacity (0-1)
+- image                : Image object or null
+- color                : Fallback color if no image ('#ffffff')
+- visible              : Whether to render
+- active               : Whether entity is active
+
+Methods:
+- setImage(imageOrPath)    : Set image from Image object or path string
+- setColor(color)          : Set fallback color
+- update(deltaTime)        : Override in subclasses for logic
+- render(ctx)              : Renders sprite (handles transforms)
+- contains(x, y)           : Point-in-bounds collision check
+- getCenterX()             : Returns center X position
+- getCenterY()             : Returns center Y position
+
+Rendering: Sprite renders around its center point with transforms applied.
+If no image, renders a colored rectangle.
+
+--------------------------------------------------------------------------------
+
+## Button (src/js/entities/Button.js)
+UI button with click detection.
+
+Constructor: new Button(x=0, y=0, w=200, h=80, text='', color='#4a90e2', alpha=1, onClick=null)
+
+Properties:
+- x, y                 : Position (top-left)
+- w, h                 : Width and height
+- text                 : Button label
+- color                : Background color
+- alpha                : Opacity
+- onClick              : Callback function(button)
+- visible              : Whether to render/detect clicks
+
+Methods:
+- render(ctx)              : Renders button with text
+- checkClick(mouseX, mouseY) : Check if click is inside, triggers onClick
+
+Example usage:
+```javascript
+const playBtn = new Button(390, 800, 300, 100, 'PLAY', '#4a90e2', 1, () => {
+  this.sceneManager.switchTo('GameScene');
+});
+this.layerManager.addToLayer(playBtn, 'UI_BUTTONS');
+
+// In update():
+if (this.inputHandler.mouse.pressed) {
+  playBtn.checkClick(this.inputHandler.mouse.x, this.inputHandler.mouse.y);
+}
+```
+
+================================================================================
+SCENE CLASS
+================================================================================
+
+## Scene (src/js/scenes/Scene.js)
+Base class for all game scenes/screens.
+
+Constructor: new Scene(name)
+
+Properties:
+- name                 : Scene identifier
+- engine               : Engine reference (set by setEngine)
+- layerManager         : LayerManager reference
+- inputHandler         : InputHandler reference
+- sceneManager         : SceneManager reference
+- isActive             : Currently active
+- isInitialized        : Has init() been called
+
+Lifecycle Methods (override in subclasses):
+- init()               : One-time initialization (load assets, create entities)
+- enter()              : Called when scene becomes active
+- exit()               : Called when leaving scene
+- update(deltaTime)    : Game logic (called every frame)
+- populateLayers()     : Add entities to layers after scene change
+
+Helper Methods:
+- setEngine(engine)    : Called by SceneManager
+- switchScene(name)    : Switch to another registered scene
+
+SCENE TEMPLATE:
+```javascript
+import { Scene } from './Scene.js';
+
+export class MyScene extends Scene {
+  constructor() {
+    super('MyScene');
+  }
+
+  init() {
+    // Load assets, create entities (called once)
+  }
+
+  enter() {
+    super.enter();
+    // Called every time scene becomes active
+  }
+
+  exit() {
+    super.exit();
+    // Cleanup when leaving
+  }
+
+  populateLayers() {
+    // Add entities to layers
+    // this.layerManager.addToLayer(entity, 'LAYER_NAME');
+  }
+
+  update(deltaTime) {
+    // Game logic, input handling
+    // deltaTime is in SECONDS (0.016 for 60fps)
+  }
+}
+```
+
+================================================================================
+ASSET SPECIFICATIONS
+================================================================================
+
+## Image Sizes
+
+| Asset Type                      | Dimensions        | Notes                          |
+|---------------------------------|-------------------|--------------------------------|
+| Full-screen background (port.)  | 1080 × 1920       | Exact internal resolution      |
+| Full-screen background (land.)  | 1920 × 1080       | For landscape games            |
+| Vertical scroll background      | 1080 × 2160+      | Height > 1920 for seamless     |
+| Horizontal scroll background    | 2160+ × 1920      | Width > 1080 for seamless      |
+| Parallax layer (far)            | 1080 × 1920+      | Can be taller for scroll       |
+| Parallax layer (near)           | 1080 × 1920+      | Can be taller for scroll       |
+
+## Spritesheet Specifications
+
+| Tile Size   | Use Case                                    |
+|-------------|---------------------------------------------|
+| 64 × 64     | Small icons, collectibles, particles        |
+| 128 × 128   | Medium sprites, enemies, items              |
+| 256 × 256   | Large sprites, player characters            |
+| 512 × 512   | Full-body characters with detail            |
+| 256 × 512   | Tall character sprites                      |
+
+Maximum spritesheet dimensions: 2048×2048 (safe), 4096×4096 (modern devices)
+Format: PNG with transparency
+
+## Spritesheet Layout
+- Grid-based: all frames same size
+- Rows can represent different animations (idle, walk, attack)
+- Columns represent frames within an animation
+- Example: 8 columns × 4 rows = 8 frames per animation, 4 animations
+
+## Audio Specifications
+
+| Type            | Format          | Notes                           |
+|-----------------|-----------------|--------------------------------|
+| Background music| MP3, OGG, AAC   | MP3 most compatible            |
+| Sound effects   | MP3, OGG, WAV   | Short files, MP3 recommended   |
+
+File paths:
+- Music: /assets/music/{filename}
+- SFX: /assets/sfx/{filename}
+
+================================================================================
+COMMON PATTERNS
+================================================================================
+
+## Creating a Title Screen Scene
+```javascript
+import { Scene } from './Scene.js';
+import { Button } from '../entities/Button.js';
+import { Sprite } from '../entities/Sprite.js';
+
+export class TitleScene extends Scene {
+  constructor() {
+    super('TitleScene');
+    this.background = null;
+    this.playButton = null;
+  }
+
+  async init() {
+    // Load assets
+    await this.engine.assetLoader.loadImages([
+      { id: 'titleBg', path: '/assets/images/title_bg.png' }
+    ]);
+  }
+
+  populateLayers() {
+    // Background (1080x1920)
+    const bgImage = this.engine.assetLoader.getImage('titleBg');
+    this.background = new Sprite(0, 0, 1080, 1920);
+    this.background.setImage(bgImage);
+    this.layerManager.addToLayer(this.background, 'BG_FAR');
+
+    // Play button
+    this.playButton = new Button(340, 1200, 400, 120, 'PLAY', '#e74c3c', 1, () => {
+      this.engine.audioManager.playSFX('click.mp3');
+      this.sceneManager.switchTo('GameScene');
+    });
+    this.layerManager.addToLayer(this.playButton, 'UI_BUTTONS');
+  }
+
+  update(deltaTime) {
+    // Check for button clicks
+    if (this.inputHandler.mouse.pressed) {
+      const { x, y } = this.inputHandler.mouse;
+      this.playButton.checkClick(x, y);
+    }
+  }
+}
+```
+
+## Registering and Switching Scenes
+```javascript
+// In main.js or a setup function:
+const titleScene = new TitleScene();
+const gameScene = new GameScene();
+
+engine.sceneManager.register('TitleScene', titleScene);
+engine.sceneManager.register('GameScene', gameScene);
+
+// Start with title
+engine.sceneManager.switchTo('TitleScene');
+
+// Later, from within a scene:
+this.sceneManager.switchTo('GameScene');
+```
+
+## Drawing Custom Objects on Layers
+```javascript
+// Any object with render(ctx) can be added to a layer
+const scoreDisplay = {
+  score: 0,
+  render: (ctx) => {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 64px Arial';
+    ctx.textAlign = 'right';
+    ctx.fillText(`Score: ${this.score}`, 1040, 80);
+  }
+};
+this.layerManager.addToLayer(scoreDisplay, 'TEXT');
+```
+
+## Frame-Rate Independent Movement
+```javascript
+update(deltaTime) {
+  // deltaTime is in SECONDS
+  // Move 200 pixels per second
+  this.player.x += 200 * deltaTime;
+  
+  // Rotate 1 radian per second
+  this.player.rotation += 1 * deltaTime;
+}
+```
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+Canvas size: 1080 × 1920
+Coordinate origin: Top-left (0, 0)
+deltaTime unit: Seconds (not milliseconds)
+Layer names: BG_FAR, BG_NEAR, VIDEO_IMAGE, SHAPES, SPRITES, TEXT, UI_BUTTONS
+
+Key imports:
+- import { Engine } from './core/Engine.js';
+- import { Scene } from './scenes/Scene.js';
+- import { Sprite } from './entities/Sprite.js';
+- import { Button } from './entities/Button.js';
+
+Development: npm run dev (port 5174)
+Production build: npm run build (outputs to /dist)
+
+================================================================================
+EMBEDDED MODE (GameDev UI Integration)
+================================================================================
+
+The Engine can run in "embedded mode" for live testing from the GameDev UI.
+This is triggered by the URL parameter: ?embedded=true
+
+In embedded mode:
+- Engine waits for commands via postMessage
+- Shows "Ready" screen until scene is loaded
+- Sends debug info back to parent window
+
+## Incoming Messages (from GameDev UI)
+
+LOAD_SCENE_CONFIG { sceneName, canvasSize, assets, states }
+  - Creates ConfigurableScene from JSON config
+  - Registers and switches to scene
+
+START_ENGINE
+  - Starts the game loop
+
+STOP_ENGINE
+  - Stops the game loop
+
+SWITCH_STATE { stateName }
+  - Changes to specific state in current scene
+
+GET_DEBUG_INFO
+  - Triggers debug info broadcast
+
+## Outgoing Messages (to GameDev UI)
+
+ENGINE_READY { width, height }
+  - Sent when engine initializes in embedded mode
+
+ENGINE_STARTED
+  - Sent when game loop starts
+
+ENGINE_STOPPED
+  - Sent when game loop stops
+
+SCENE_LOADED { sceneName, states }
+  - Sent when scene is loaded from config
+
+STATE_CHANGED { stateName }
+  - Sent when state changes
+
+DEBUG_INFO { isRunning, sceneName, stateName, fps, layerCounts, totalEntities }
+  - Sent periodically (every 500ms) while running
+
+ERROR { message }
+  - Sent when an error occurs
+
+## ConfigurableScene (src/js/scenes/ConfigurableScene.js)
+
+Special scene class that can be configured from JSON at runtime.
+Used by GameDev UI to test scenes without generating JS files.
+
+Methods:
+- loadFromConfig(config) - Parse JSON and setup scene
+- getCurrentStateName() - Get current state name
+- getEntity(id) - Get entity by ID
+- _switchToState(stateName) - Change to specific state
+
+Supports:
+- Dynamic entity creation (sprite, button, text, shape)
+- State machine with timer/button transitions
+- Animations (fadeIn, fadeOut, slideIn, slideOut, scale, pulse)
+- Asset loading/unloading
+
+## Testing with Embedded Mode
+
+1. Start Engine: cd Engine && npm run dev
+2. Start GameDev UI: cd SceneEditor && npm run dev
+3. Open GameDev UI → Create scene → Click "Test"
+4. Scene loads in Engine iframe via postMessage
+
+================================================================================
+END OF LLM CONTEXT FILE
+================================================================================
