@@ -1,6 +1,7 @@
 import { Engine } from './core/Engine.js';
 import { BootScene } from './scenes/BootScene.js';
 import { ConfigurableScene } from './scenes/ConfigurableScene.js';
+import { PongScene } from './scenes/PongScene.js';
 
 /**
  * Main entry point - boots the Engine
@@ -40,14 +41,14 @@ if (!canvas) {
     // Load JSON scene from file
     loadJSONScene(engine, sceneParam);
   } else {
-    // Default: load BootScene
-    const bootScene = new BootScene();
-    engine.sceneManager.changeScene(bootScene);
+    // Default: load PongScene
+    const pongScene = new PongScene();
+    engine.sceneManager.changeScene(pongScene);
     engine.start();
     
     console.log('Game Engine initialized');
     console.log('Internal resolution: 1080x1920');
-    console.log('BootScene loaded - engine is alive');
+    console.log('PongScene loaded - game is ready');
   }
   
   // Make engine globally available for debugging
